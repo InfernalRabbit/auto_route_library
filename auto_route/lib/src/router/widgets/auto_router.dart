@@ -46,7 +46,7 @@ class AutoRouter extends StatefulWidget {
 
   /// Builds a [_DeclarativeAutoRouter] which uses
   /// a declarative list of routes to update navigator stack
-  static Widget declarative({
+  factory AutoRouter.declarative({
     Key? key,
     NavigatorObserversBuilder navigatorObservers =
         AutoRouterDelegate.defaultNavigatorObserversBuilder,
@@ -59,12 +59,37 @@ class AutoRouter extends StatefulWidget {
     WidgetBuilder? placeholder,
   }) =>
       _DeclarativeAutoRouter(
+        key: key,
         onPopRoute: onPopRoute,
         navigatorKey: navigatorKey,
         navRestorationScopeId: navRestorationScopeId,
         navigatorObservers: navigatorObservers,
         inheritNavigatorObservers: inheritNavigatorObservers,
         onNavigate: onNavigate,
+        placeholder: placeholder,
+        routes: routes,
+      );
+
+  /// Builds a [_ParalelAutoRouter] which uses
+  /// a list of routes to show in current navigator
+  factory AutoRouter.parallel({
+    Key? key,
+    NavigatorObserversBuilder navigatorObservers =
+        AutoRouterDelegate.defaultNavigatorObserversBuilder,
+    Widget Function(BuildContext context, Widget content)? builder,
+    String? navRestorationScopeId,
+    GlobalKey<NavigatorState>? navigatorKey,
+    bool inheritNavigatorObservers = true,
+    WidgetBuilder? placeholder,
+    required List<String>? routes,
+  }) =>
+      _ParalelAutoRouter(
+        key: key,
+        navigatorObservers: navigatorObservers,
+        builder: builder,
+        navigatorKey: navigatorKey,
+        navRestorationScopeId: navRestorationScopeId,
+        inheritNavigatorObservers: inheritNavigatorObservers,
         placeholder: placeholder,
         routes: routes,
       );
@@ -184,27 +209,23 @@ class AutoRouterState extends State<AutoRouter> {
   }
 }
 
-class _DeclarativeAutoRouter extends StatefulWidget {
+class _DeclarativeAutoRouter extends AutoRouter {
   final RoutesBuilder routes;
   final RoutePopCallBack? onPopRoute;
-  final NavigatorObserversBuilder navigatorObservers;
-  final String? navRestorationScopeId;
-  final bool inheritNavigatorObservers;
-  final GlobalKey<NavigatorState>? navigatorKey;
   final OnNestedNavigateCallBack? onNavigate;
-  final WidgetBuilder? placeholder;
 
   const _DeclarativeAutoRouter({
+    super.key,
     required this.routes,
-    this.navigatorObservers =
+    super.navigatorObservers =
         AutoRouterDelegate.defaultNavigatorObserversBuilder,
     this.onPopRoute,
-    this.navigatorKey,
-    this.navRestorationScopeId,
-    this.inheritNavigatorObservers = true,
+    super.navigatorKey,
+    super.navRestorationScopeId,
+    super.inheritNavigatorObservers = true,
     this.onNavigate,
-    this.placeholder,
-  });
+    super.placeholder,
+  }) : super();
 
   @override
   _DeclarativeAutoRouterState createState() => _DeclarativeAutoRouterState();
@@ -283,5 +304,119 @@ class _DeclarativeAutoRouterState extends State<_DeclarativeAutoRouter> {
         ),
       ),
     );
+  }
+}
+
+/// A Wrapper for [Navigator] that handles stack-routing
+class _ParalelAutoRouter extends AutoRouter {
+  /// A List of route names that rendered separately
+  final List<String>? routes;
+
+  /// Default constructor
+  const _ParalelAutoRouter({
+    super.key,
+    super.navigatorObservers =
+        AutoRouterDelegate.defaultNavigatorObserversBuilder,
+    super.builder,
+    super.navRestorationScopeId,
+    super.navigatorKey,
+    super.inheritNavigatorObservers = true,
+    super.placeholder,
+    this.routes,
+  }) : super();
+
+  @override
+  State<_ParalelAutoRouter> createState() => ParalelAutoRouterState();
+}
+
+/// State implementation of [_ParalelAutoRouter]
+class ParalelAutoRouterState extends State<_ParalelAutoRouter> {
+  StackRouter? _controller;
+
+  /// The StackRouter controlling this router widget
+  StackRouter? get controller => _controller;
+  late List<NavigatorObserver> _navigatorObservers;
+  late NavigatorObserversBuilder _inheritableObserversBuilder;
+  late RoutingController _parentController;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_controller == null) {
+      final parentRouteData = RouteData.of(context);
+      final parentScope = RouterScope.of(context, watch: true);
+      _inheritableObserversBuilder = () {
+        var observers = widget.navigatorObservers();
+        if (!widget.inheritNavigatorObservers) {
+          return observers;
+        }
+        var inheritedObservers = parentScope.inheritableObserversBuilder();
+        return inheritedObservers + observers;
+      };
+      _navigatorObservers = _inheritableObserversBuilder();
+      _parentController = parentScope.controller;
+      final subCollection = _parentController.routeCollection.subCollectionOf(
+        parentRouteData.name,
+      );
+      _controller = NestedStackRouter(
+        parent: _parentController,
+        key: parentRouteData.key,
+        routeData: parentRouteData,
+        navigatorKey: widget.navigatorKey,
+        routeCollection: widget.routes != null
+            ? RouteCollection.fromList(subCollection.routes
+                .where((e) => widget.routes?.contains(e.name) ?? true)
+                .toList())
+            : subCollection,
+        pageBuilder: _parentController.pageBuilder,
+      );
+
+      _parentController.attachChildController(_controller!);
+      _controller!.addListener(_rebuildListener);
+    }
+  }
+
+  void _rebuildListener() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    assert(_controller != null);
+    var navigator = AutoRouteNavigator(
+      router: _controller!,
+      navRestorationScopeId: widget.navRestorationScopeId,
+      navigatorObservers: _navigatorObservers,
+      placeholder: widget.placeholder,
+    );
+    final stateHash = controller!.stateHash;
+    return RouterScope(
+      controller: _controller!,
+      inheritableObserversBuilder: _inheritableObserversBuilder,
+      navigatorObservers: _navigatorObservers,
+      stateHash: stateHash,
+      child: StackRouterScope(
+        controller: _controller!,
+        stateHash: stateHash,
+        child: widget.builder == null
+            ? navigator
+            : Builder(
+                builder: (ctx) => widget.builder!(ctx, navigator),
+              ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
+    if (_controller != null) {
+      _controller!.removeListener(_rebuildListener);
+      _controller!.dispose();
+      _parentController.removeChildController(_controller!);
+      _controller = null;
+    }
   }
 }

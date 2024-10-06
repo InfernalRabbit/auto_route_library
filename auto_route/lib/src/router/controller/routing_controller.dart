@@ -443,6 +443,8 @@ abstract class RoutingController with ChangeNotifier {
   bool get isRoot => _parent == null;
 
   RoutingController _topMostRouter({bool ignorePagelessRoutes = false});
+  List<RoutingController> _topMostRoutersOfParent(
+      {bool ignorePagelessRoutes = false});
 
   /// Finds the router with top-most visible page
   ///
@@ -728,6 +730,12 @@ class TabsRouter extends RoutingController {
       );
     }
     return this;
+  }
+
+  @override
+  List<RoutingController> _topMostRoutersOfParent(
+      {bool ignorePagelessRoutes = false}) {
+    return [_topMostRouter(ignorePagelessRoutes: ignorePagelessRoutes)];
   }
 
   @override
@@ -1114,6 +1122,20 @@ abstract class StackRouter extends RoutingController {
   }
 
   @override
+  List<RoutingController> _topMostRoutersOfParent(
+      {bool ignorePagelessRoutes = false}) {
+    if (_childControllers.isNotEmpty &&
+        (ignorePagelessRoutes || !hasPagelessTopRoute)) {
+      return _childControllers
+          .map((e) => e._topMostRouter(
+                ignorePagelessRoutes: ignorePagelessRoutes,
+              ))
+          .toList();
+    }
+    return [this];
+  }
+
+  @override
   RouteData get topRoute => _topMostRouter(ignorePagelessRoutes: true).current;
 
   /// Whether the top-most route of this controller is page-less
@@ -1225,9 +1247,8 @@ abstract class StackRouter extends RoutingController {
   }
 
   StackRouter _findStackScope(PageRouteInfo route) {
-    final stackRouters = _topMostRouter(ignorePagelessRoutes: true)
-        ._buildRoutersHierarchy()
-        .whereType<StackRouter>();
+    final stackRouters = _topMostRoutersOfParent(ignorePagelessRoutes: true)
+        .expand((e) => e._buildRoutersHierarchy().whereType<StackRouter>());
     return stackRouters.firstWhere(
       (c) => c._canHandleNavigation(route),
       orElse: () => this,
